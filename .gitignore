@@ -1,0 +1,36 @@
+# Build output
+Release/
+*.dll
+*.pdb
+*.obj
+*.idb
+
+# Debug logs
+*.log
+
+# Visual Studio user/local settings
+*.user
+*.suo
+*.ncb
+*.aps
+.vs/
+
+# SDK wiki (separate download)
+RE1-Mod-SDK.wiki/
+
+# Local tool folders
+.claude/
+.dotnet/
+
+# Excluded project files
+manifest.txt
+Picmain.png
+xy.jpg
+CLAUDE.md
+
+# Backup / work-in-progress CPP files
+dllmain - Resident evil 2.cpp
+dllmain - Resident evil 3.cpp
+dllmain - wersja claude godz 1630.cpp
+dllmain- Resident evil 1 z logami.cpp
+dllmain-codex.cpp
