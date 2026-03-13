@@ -143,65 +143,89 @@ static XInputGetStateFn g_XInputGetState = NULL;
 
 static FILE* g_LogFile = NULL;
 static long  g_LogDataStart = 0;
-static long  g_LogWritePos  = 0;
-enum { LOG_FILE_MAX_BYTES = 1024 * 1024 }; /* 1 MB cap — wraps on overflow */
+static long  g_LogWritePos = 0;
+enum { LOG_FILE_MAX_BYTES = 1024 * 1024 };
 
 static void LogWriteRaw(const char* text, size_t len) {
-    if (!g_LogFile || !text || len == 0) return;
-    if (g_LogDataStart < 0 || g_LogDataStart >= LOG_FILE_MAX_BYTES) return;
+    if (!g_LogFile || !text || len == 0)
+        return;
+
+    if (g_LogDataStart < 0 || g_LogDataStart >= LOG_FILE_MAX_BYTES)
+        return;
 
     size_t dataCapacity = (size_t)(LOG_FILE_MAX_BYTES - g_LogDataStart);
-    if (dataCapacity == 0) return;
-    if (len > dataCapacity) { text += (len - dataCapacity); len = dataCapacity; }
+    if (dataCapacity == 0)
+        return;
+
+    if (len > dataCapacity) {
+        text += (len - dataCapacity);
+        len = dataCapacity;
+    }
 
     if (g_LogWritePos < g_LogDataStart || g_LogWritePos > LOG_FILE_MAX_BYTES)
         g_LogWritePos = g_LogDataStart;
-    if (g_LogWritePos + (long)len > LOG_FILE_MAX_BYTES)
-        g_LogWritePos = g_LogDataStart;   /* wrap to start of data region */
 
-    if (fseek(g_LogFile, g_LogWritePos, SEEK_SET) != 0) return;
+    if (g_LogWritePos + (long)len > LOG_FILE_MAX_BYTES)
+        g_LogWritePos = g_LogDataStart;
+
+    if (fseek(g_LogFile, g_LogWritePos, SEEK_SET) != 0)
+        return;
+
     size_t written = fwrite(text, 1, len, g_LogFile);
     fflush(g_LogFile);
     g_LogWritePos += (long)written;
 }
 
 static void LogInit() {
-    static const char kHeader[] = "=== RE1 Analog 3D Controls - Debug Log ===\r\n\r\n";
+    static const char kLogHeader[] = "=== RE1 Analog 3D Controls - Debug Log ===\r\n\r\n";
+
     fopen_s(&g_LogFile, "analog3d_debug.log", "w+b");
-    if (!g_LogFile) return;
-    fwrite(kHeader, 1, sizeof(kHeader) - 1, g_LogFile);
+    if (!g_LogFile)
+        return;
+
+    fwrite(kLogHeader, 1, sizeof(kLogHeader) - 1, g_LogFile);
     fflush(g_LogFile);
+
     g_LogDataStart = ftell(g_LogFile);
-    if (g_LogDataStart < 0) g_LogDataStart = (long)(sizeof(kHeader) - 1);
+    if (g_LogDataStart < 0)
+        g_LogDataStart = (long)(sizeof(kLogHeader) - 1);
     g_LogWritePos = g_LogDataStart;
 }
 
 static void Log(const char* fmt, ...) {
     if (!g_LogFile) return;
+
     va_list args;
     va_start(args, fmt);
     int bodyLen = _vscprintf(fmt, args);
     va_end(args);
-    if (bodyLen < 0) return;
-    size_t totalLen = (size_t)bodyLen + 2;   /* +\r\n */
+    if (bodyLen < 0)
+        return;
+
+    size_t totalLen = (size_t)bodyLen + 2;
     char* line = (char*)malloc(totalLen + 1);
-    if (!line) return;
+    if (!line)
+        return;
+
     va_start(args, fmt);
     vsnprintf_s(line, totalLen + 1, _TRUNCATE, fmt, args);
     va_end(args);
-    line[bodyLen] = '\r'; line[bodyLen + 1] = '\n'; line[bodyLen + 2] = '\0';
+
+    line[bodyLen] = '\r';
+    line[bodyLen + 1] = '\n';
+    line[bodyLen + 2] = '\0';
     LogWriteRaw(line, totalLen);
     free(line);
 }
 
 static void LogClose() {
     if (g_LogFile) {
-        static const char kFooter[] = "\r\n=== End of log ===\r\n";
-        LogWriteRaw(kFooter, sizeof(kFooter) - 1);
+        static const char kLogFooter[] = "\r\n=== End of log ===\r\n";
+        LogWriteRaw(kLogFooter, sizeof(kLogFooter) - 1);
         fclose(g_LogFile);
         g_LogFile = NULL;
         g_LogDataStart = 0;
-        g_LogWritePos  = 0;
+        g_LogWritePos = 0;
     }
 }
 
@@ -856,15 +880,9 @@ static void DoAnalog3D() {
 
         if (bit4) {
             if (s_bit4Frames < 0x7FFF) s_bit4Frames++;
-            /* Fast-track: if bit4 first appears while we are already in the
-               release countdown (hardCut has cleared, no letterbox, player is in
-               normal movement), it is almost certainly a room-permanent flag like
-               room 4 — not a new cutscene trigger.  Waiting the full 15-frame
-               suspect window in this case causes an unnecessary ~1 s delay every
-               time the player walks through the door into that room.
-               Normal path: wait BIT4_SUSPECT_FRAMES before declaring it stuck. */
-            bool fastTrackStuck = s_cutsceneLatched && !hardCut && !letterbox && normalNow;
-            if (!s_ignoreStuckBit4 && (fastTrackStuck || s_bit4Frames > BIT4_SUSPECT_FRAMES) && normalNow)
+            /* Allow ignoring stuck bit4 even while latched, so a door transition
+               into a room where bit4 gets permanently set cannot trap the mod. */
+            if (!s_ignoreStuckBit4 && s_bit4Frames > BIT4_SUSPECT_FRAMES && normalNow)
                 s_ignoreStuckBit4 = true;
         } else {
             s_bit4Frames = 0;
@@ -873,21 +891,18 @@ static void DoAnalog3D() {
 
         bool bit4Suspect = bit4 && !s_ignoreStuckBit4 && s_bit4Frames <= BIT4_SUSPECT_FRAMES;
         bool bit4ConfirmsScript = bit4 && !s_ignoreStuckBit4 && !normalNow;
-        /* stableGameplay: player state machine is in free-roam position.
-           Intentionally excludes letterbox — the countdown is allowed to run
-           while bars are still fading so that when lb finally hits 0 the mod
-           activates immediately instead of making the player wait an extra
-           CUTSCENE_RELEASE_FRAMES after the bars have already gone. */
+        /* Stable gameplay: no letterbox bars, no STATUS cutscene bits, no pre-cut
+           R1 flicker, and player state machine in normal free-roam position. */
         bool stableGameplay =
+            !letterbox &&
             (!bit4 || s_ignoreStuckBit4) && !hardCut && !r1PreCut &&
             *PL_ROUTINE_0 == 1 &&
             *PL_ROUTINE_1 == 0;
 
-        /* Latch on hard cutscene STATUS bits or the r1PreCut pre-cut heuristic.
-           Letterbox is NOT a latch trigger here — it lives in blockCutscene only.
-           This lets the release countdown run in parallel with the lb fade so
-           activation is immediate the moment lb reaches 0. */
-        if (hardCut || bit4ConfirmsScript || r1PreCut) {
+        /* Letterbox active is a direct cutscene signal — latch immediately.
+           Also keep the existing heuristic triggers as belt-and-suspenders for
+           cutscenes that start before bars appear (pre-cut frames). */
+        if (letterbox || hardCut || bit4ConfirmsScript || r1PreCut) {
             s_cutsceneLatched = true;
             s_releaseFrames = 0;
         } else if (s_cutsceneLatched) {
@@ -902,9 +917,6 @@ static void DoAnalog3D() {
             }
         }
 
-        /* Block while letterbox bars are visible OR while latch countdown is
-           still running.  Because the countdown now runs during the lb fade,
-           both conditions typically clear simultaneously. */
         bool blockCutscene = letterbox || hardCut || s_cutsceneLatched || bit4Suspect;
 
         if (blockCutscene) {
@@ -1244,13 +1256,17 @@ static void DoAnalog3D() {
         return;
     }
 
-    /* Buffer camera angle for all stick directions while stick is held.
-       The old X-dominant override (sideways always used currentCam) caused
-       1-frame direction snaps: when the stick briefly crossed the X=Y
-       boundary near a camera cut, g_ActiveCamAngle would snap to the new
-       camera for one frame, producing a visible direction lurch.
-       Camera angle update now only happens on stick release (mag < 0.01). */
-    g_StickWasActive = true;
+    /* Only buffer camera angle for forward/back (Y-dominant) movement.
+       Sideways (X-dominant) always uses current camera angle. */
+    float absX = stickX < 0 ? -stickX : stickX;
+    float absY = stickY < 0 ? -stickY : stickY;
+    if (absY >= absX) {
+        g_StickWasActive = true;
+    }
+    else {
+        g_ActiveCamAngle = currentCam;
+        g_StickWasActive = false;
+    }
 
     /* Convert stick direction to BAM, add camera facing */
     float rad = atan2f(stickX, stickY);

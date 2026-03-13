@@ -34,3 +34,11 @@ dllmain - Resident evil 3.cpp
 dllmain - wersja claude godz 1630.cpp
 dllmain- Resident evil 1 z logami.cpp
 dllmain-codex.cpp
+dllmain - claude_works_rotatingcutscenes.cpp
+
+# Wrong-platform build script (use build_and_deploy.bat instead)
+build.bat
+
+# AI session memory / internal notes
+memory/
+memory_codex/
