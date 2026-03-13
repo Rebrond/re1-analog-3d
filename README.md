@@ -52,3 +52,5 @@ Output: `Release/analog3d.dll`
 This mod was created with the help of various AI tools, primarily **Claude** (by Anthropic). The logic, memory research, and iteration were a collaboration between me and AI — Claude helped write, debug, and refine the code throughout the entire development process.
 
 Special thanks to **X4vv** from the Kroniki Myrtany Discord for help and bug testing during development.
+
+The RE1-Mod-SDK used in this project was created by **[Gemini-Loboto3](https://github.com/Gemini-Loboto3/RE1-Mod-SDK)** and is licensed under [CC BY-NC-ND 4.0](https://creativecommons.org/licenses/by-nc-nd/4.0/).
