@@ -778,10 +778,10 @@ static void DoAnalog3D() {
         static DWORD s_hbTick = 0;
         DWORD now = GetTickCount();
         if (now - s_hbTick >= 2000) {
-            Log("[HB] PROOM=0x%X LIFE=%d BE_FLG=0x%02X R0=%u R1=%u moveCnt=%u STATUS=0x%X SYS=0x%X FLG5=0x%X stage=%u room=%u cut=%u",
+            Log("[HB] PROOM=0x%X LIFE=%d BE_FLG=0x%02X R0=%u R1=%u moveCnt=%u STATUS=0x%X SYS=0x%X FLG5=0x%X room=%u cut=%u",
                 *G_PROOM, (int)*G_PL_LIFE, *PL_BE_FLG, *PL_ROUTINE_0, *PL_ROUTINE_1,
                 (u32)*PL_MOVE_CNT, *G_STATUS_FLG, *G_SYSTEM_FLG, (u32)*G_FLG5,
-                (u32)*G_STAGE_NO, (u32)*G_ROOM_NO, (u32)*G_CUT_NO);
+                ((u32)*G_STAGE_NO + 1) * 100 + (u32)*G_ROOM_NO, (u32)*G_CUT_NO);
             s_hbTick = now;
         }
     }
@@ -934,10 +934,10 @@ static void DoAnalog3D() {
         u32 curRoomSig = GetRoomSignature();
         if (curRoom != s_lastRoom || curRoomSig != s_lastRoomSig) {
             const char* hookMode = g_UsingHook ? "hook" : (g_WorkerThread ? "poll" : "NONE");
-            Log("Room change: room=0x%X -> 0x%X sig=0x%X -> 0x%X | mode=%s BE=0x%02X R0=%u R1=%u stage=%u room=%u cut=%u STATUS=0x%X SYS=0x%X streak=%d",
+            Log("Room change: room=0x%X -> 0x%X sig=0x%X -> 0x%X | mode=%s BE=0x%02X R0=%u R1=%u room=%u cut=%u STATUS=0x%X SYS=0x%X streak=%d",
                 s_lastRoom, curRoom, s_lastRoomSig, curRoomSig, hookMode,
                 *PL_BE_FLG, *PL_ROUTINE_0, *PL_ROUTINE_1,
-                (u32)*G_STAGE_NO, (u32)*G_ROOM_NO, (u32)*G_CUT_NO,
+                ((u32)*G_STAGE_NO + 1) * 100 + (u32)*G_ROOM_NO, (u32)*G_CUT_NO,
                 *G_STATUS_FLG, *G_SYSTEM_FLG, g_NormalMoveStreak);
             LogHookStatus();
             g_RoomChangeEpoch++;
