@@ -251,43 +251,6 @@ static u16  g_InteractPassDir = 0;
 static u16  g_InteractPassKey = 0;
 static u8   g_TrackedStickFrames = 0;
 
-/* ================================================================
-   MOVEMENT MODE STATE
-   Three camera-cut handling modes, switchable with CTRL+1/2/3:
-     1 = Y-dominant stick buffer  (default)
-     2 = Y-dominant buffer + run button required
-     3 = Freeze + smoothstep blend
-   ================================================================ */
-#define CAM_MODE_MIN      1
-#define CAM_MODE_MAX      3
-#define CAM_MODE_DEFAULT  1
-#define FREEZE_MS_DEFAULT 250   /* mode 3: ms to hold old angle after cut  */
-#define BLEND_MS_DEFAULT  100   /* mode 3: ms to blend into new angle      */
-
-static u8    g_CamMode       = CAM_MODE_DEFAULT;
-static u8    g_SaveBuf       = CAM_MODE_DEFAULT;
-static DWORD g_FreezeMs      = FREEZE_MS_DEFAULT;
-static DWORD g_BlendMs       = BLEND_MS_DEFAULT;
-
-/* Mode 3: Freeze+Blend transition state */
-static DWORD g_FreezeUntil   = 0;
-static DWORD g_BlendStart    = 0;
-static s16   g_FrozenAngle   = 0;
-
-/* Modes 1+2: camera-angle snapshot buffer */
-static bool  g_BufferActive  = false;
-static s16   g_BufferedAngle = 0;
-
-/* CTRL+0 disable toggle */
-static bool  g_AnalogDisabled  = false;
-static bool  g_Ctrl0WasDown    = false;
-
-/* CTRL+1/2/3 edge detection (indices 1-3 used) */
-static bool  g_KeyWasDown[4] = {};
-
-/* INI config path */
-static char  g_IniPath[MAX_PATH] = {};
-
 /* Stairs handling timing constants */
 const DWORD SPECIAL_STATE_LOCK_MS = 60;    /* Hard block after stair animation ends (~2 frames at 30fps) */
 const float INTERACT_PASS_ENTRY_MIN_MAG = 0.55f;
@@ -347,298 +310,6 @@ static bool InitXInput() {
         }
     }
     return false;
-}
-
-/* ================================================================
-   CONFIG  (analog3d.ini)
-   ================================================================ */
-
-static void CreateDefaultIni() {
-    HANDLE h = CreateFileA(g_IniPath, GENERIC_WRITE, 0, NULL,
-        CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return;
-    const char* content =
-        "[analog3d]\r\n"
-        "; Camera-cut handling mode. Switch in-game with CTRL+1 / CTRL+2 / CTRL+3.\r\n"
-        ";\r\n"
-        ";   1 = Stick buffer (default)\r\n"
-        ";       On a camera cut, the previous camera angle is held while you keep\r\n"
-        ";       pushing the stick forward/backward. Release the stick to adopt the\r\n"
-        ";       new camera. Sideways input always uses the live camera immediately.\r\n"
-        ";\r\n"
-        ";   2 = Stick buffer + Run\r\n"
-        ";       Same as mode 1 but buffering only activates when you are running at\r\n"
-        ";       the cut. Walking through cuts always snaps to the new camera.\r\n"
-        ";\r\n"
-        ";   3 = Freeze and blend\r\n"
-        ";       On a cut the old angle freezes for freeze_ms milliseconds, then\r\n"
-        ";       smoothly blends to the new angle over blend_ms milliseconds.\r\n"
-        "mode=1\r\n"
-        "\r\n"
-        "; Mode 3 timing (milliseconds)\r\n"
-        "freeze_ms=250\r\n"
-        "blend_ms=100\r\n";
-    DWORD written;
-    WriteFile(h, content, lstrlenA(content), &written, NULL);
-    CloseHandle(h);
-}
-
-static void LoadConfig() {
-    char exe[MAX_PATH] = {};
-    GetModuleFileNameA(NULL, exe, MAX_PATH);
-    lstrcpyA(g_IniPath, exe);
-    char* last = NULL;
-    for (char* p = g_IniPath; *p; p++)
-        if (*p == '\\' || *p == '/') last = p;
-    if (last) *(last + 1) = '\0';
-    lstrcatA(g_IniPath, "analog3d.ini");
-
-    if (GetFileAttributesA(g_IniPath) == INVALID_FILE_ATTRIBUTES)
-        CreateDefaultIni();
-
-    int mode = (int)GetPrivateProfileIntA("analog3d", "mode",      CAM_MODE_DEFAULT,  g_IniPath);
-    int frz  = (int)GetPrivateProfileIntA("analog3d", "freeze_ms", FREEZE_MS_DEFAULT, g_IniPath);
-    int bld  = (int)GetPrivateProfileIntA("analog3d", "blend_ms",  BLEND_MS_DEFAULT,  g_IniPath);
-
-    if (mode < CAM_MODE_MIN || mode > CAM_MODE_MAX) mode = CAM_MODE_DEFAULT;
-    if (frz < 0) frz = 0;
-    if (bld < 1) bld = 1;
-
-    g_CamMode = g_SaveBuf = (u8)mode;
-    g_FreezeMs = (DWORD)frz;
-    g_BlendMs  = (DWORD)bld;
-}
-
-static void SaveConfig() {
-    if (!g_IniPath[0]) return;
-    char val[4] = {};
-    wsprintfA(val, "%d", (int)g_CamMode);
-    WritePrivateProfileStringA("analog3d", "mode", val, g_IniPath);
-}
-
-/* ================================================================
-   MODE SWITCHING
-   ================================================================ */
-
-static void SetModeText(u8 mode);    /* defined in overlay section below */
-static void ShowOverlayText(const char* text); /* defined in overlay section below */
-
-static void SetMode(u8 m) {
-    bool wasDisabled = g_AnalogDisabled;
-    g_AnalogDisabled = false; /* CTRL+1/2/3 always re-enables */
-    if (m == g_CamMode && !wasDisabled) return;
-    g_CamMode = g_SaveBuf = m;
-    g_FreezeUntil = g_BlendStart = 0;
-    g_BufferActive  = false;
-    g_BufferedAngle = 0;
-    SaveConfig();
-    SetModeText(m);
-    Log("Mode -> %u", (u32)m);
-}
-
-/* Detects first pressed frame of CTRL+0/1/2/3 and switches mode or toggles disable. */
-static void PollModeButtons() {
-    bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-
-    /* CTRL+0: toggle analog controls on/off */
-    bool ctrl0 = ctrl && (GetAsyncKeyState(0x30) & 0x8000) != 0;
-    if (ctrl0 && !g_Ctrl0WasDown) {
-        g_AnalogDisabled = !g_AnalogDisabled;
-        ShowOverlayText(g_AnalogDisabled ? "Controls Disabled" : "Controls Enabled");
-        Log("AnalogDisabled -> %d", (int)g_AnalogDisabled);
-    }
-    g_Ctrl0WasDown = ctrl0;
-
-    /* CTRL+1/2/3: switch camera mode */
-    for (int i = 1; i <= 3; i++) {
-        bool down = ctrl && (GetAsyncKeyState(0x30 + i) & 0x8000) != 0;
-        if (down && !g_KeyWasDown[i]) SetMode((u8)i);
-        g_KeyWasDown[i] = down;
-    }
-}
-
-/* ================================================================
-   OVERLAY WINDOW
-   Displays mode name for 5 s after CTRL+1/2/3.  Implemented as a
-   separate WS_EX_LAYERED topmost Win32 window — the only approach
-   that works with DirectDraw games (DWM composites on top of DD).
-   RGB(0,0,0) = transparent colorkey; text drawn in any other colour.
-   ================================================================ */
-
-static HMODULE g_hDllModule       = NULL;   /* set in DllMain */
-static HWND    g_OverlayWnd       = NULL;
-static HANDLE  g_OverlayThreadHnd = NULL;
-static HANDLE  g_OverlayStop      = NULL;
-
-static volatile char  g_OvText[64] = {};
-static volatile DWORD g_OvUntil    = 0;
-
-static void ShowOverlayText(const char* text) {
-    int i = 0;
-    for (; text[i] && i < 63; i++) g_OvText[i] = text[i];
-    g_OvText[i] = '\0';
-    g_OvUntil = GetTickCount() + 5000;
-    HWND ov = g_OverlayWnd;
-    if (ov) InvalidateRect(ov, NULL, FALSE);
-}
-
-static void SetModeText(u8 mode) {
-    static const char* const kNames[] = {
-        "", "Mode 1 - Stick Buffer", "Mode 2 - Run Buffer", "Mode 3 - Smooth Blend"
-    };
-    if (mode < 1 || mode > 3) return;
-    ShowOverlayText(kNames[mode]);
-}
-
-struct FindWndCtx { DWORD pid; HWND hwnd; };
-static BOOL CALLBACK FindWndCb(HWND h, LPARAM lp) {
-    FindWndCtx* c = (FindWndCtx*)lp;
-    DWORD pid = 0; GetWindowThreadProcessId(h, &pid);
-    if (pid != c->pid || !IsWindowVisible(h)) return TRUE;
-    char title[4] = {};
-    GetWindowTextA(h, title, sizeof(title));
-    if (!title[0]) return TRUE;
-    c->hwnd = h;
-    return FALSE; /* stop on first match */
-}
-static HWND FindGameWindow() {
-    FindWndCtx ctx = { GetCurrentProcessId(), NULL };
-    EnumWindows(FindWndCb, (LPARAM)&ctx);
-    return ctx.hwnd;
-}
-
-static void PaintOverlay(HWND hwnd) {
-    RECT cr;
-    GetClientRect(hwnd, &cr);
-    int w = cr.right, h = cr.bottom;
-
-    PAINTSTRUCT ps;
-    HDC dc = BeginPaint(hwnd, &ps);
-
-    /* Fill with colorkey — these pixels become fully transparent */
-    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
-    FillRect(dc, &cr, black);
-    DeleteObject(black);
-
-    DWORD now = GetTickCount();
-    if (now < g_OvUntil && g_OvText[0]) {
-        char text[64];
-        int i = 0;
-        for (; i < 63 && g_OvText[i]; i++) text[i] = (char)g_OvText[i];
-        text[i] = '\0';
-
-        /* Font height ~5% of window height, minimum 14px */
-        int fh = h / 20;
-        if (fh < 14) fh = 14;
-        HFONT font = CreateFontA(fh, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-            ANSI_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-            ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_SWISS, "Arial");
-        HFONT oldFont = (HFONT)SelectObject(dc, font);
-        SetBkMode(dc, TRANSPARENT);
-
-        int mx = w / 50; if (mx < 10) mx = 10;
-        int my = h / 30; if (my < 8)  my = 8;
-
-        /* Drop shadow: RGB(1,1,1) — not 0,0,0 which would be transparent */
-        RECT sr = { mx + 2, h - fh - my + 2, w, h };
-        SetTextColor(dc, RGB(1, 1, 1));
-        DrawTextA(dc, text, -1, &sr, DT_LEFT | DT_SINGLELINE);
-
-        /* Main text: yellow */
-        RECT tr = { mx, h - fh - my, w, h };
-        SetTextColor(dc, RGB(255, 220, 0));
-        DrawTextA(dc, text, -1, &tr, DT_LEFT | DT_SINGLELINE);
-
-        SelectObject(dc, oldFont);
-        DeleteObject(font);
-    }
-
-    EndPaint(hwnd, &ps);
-}
-
-static LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_PAINT) { PaintOverlay(hwnd); return 0; }
-    if (msg == WM_TIMER && wp == 1) {
-        /* Reposition over game window each tick */
-        HWND game = FindGameWindow();
-        if (game) {
-            RECT gr; GetWindowRect(game, &gr);
-            SetWindowPos(hwnd, HWND_TOPMOST,
-                gr.left, gr.top, gr.right - gr.left, gr.bottom - gr.top,
-                SWP_NOACTIVATE);
-        }
-        InvalidateRect(hwnd, NULL, FALSE);
-        return 0;
-    }
-    return DefWindowProcA(hwnd, msg, wp, lp);
-}
-
-static DWORD WINAPI OverlayThreadProc(LPVOID) {
-    WNDCLASSA wc = {};
-    wc.style         = CS_HREDRAW | CS_VREDRAW;
-    wc.lpfnWndProc   = OverlayWndProc;
-    wc.hInstance     = g_hDllModule;
-    wc.lpszClassName = "RE1Analog3DOverlay";
-    RegisterClassA(&wc);
-
-    /* Wait up to 10 s for the game window to appear */
-    HWND game = NULL;
-    for (int i = 0; i < 50 && !game; i++) {
-        if (WaitForSingleObject(g_OverlayStop, 200) == WAIT_OBJECT_0) goto done;
-        game = FindGameWindow();
-    }
-    if (!game) goto done;
-
-    {
-        RECT gr; GetWindowRect(game, &gr);
-        g_OverlayWnd = CreateWindowExA(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            "RE1Analog3DOverlay", "", WS_POPUP,
-            gr.left, gr.top, gr.right - gr.left, gr.bottom - gr.top,
-            NULL, NULL, g_hDllModule, NULL);
-    }
-    if (!g_OverlayWnd) goto done;
-
-    SetLayeredWindowAttributes(g_OverlayWnd, RGB(0, 0, 0), 0, LWA_COLORKEY);
-    ShowWindow(g_OverlayWnd, SW_SHOWNOACTIVATE);
-    SetTimer(g_OverlayWnd, 1, 33, NULL);
-
-    {
-        HANDLE handles[1] = { g_OverlayStop };
-        MSG omsg;
-        while (true) {
-            DWORD r = MsgWaitForMultipleObjects(1, handles, FALSE, INFINITE, QS_ALLINPUT);
-            if (r == WAIT_OBJECT_0) break; /* stop event signaled */
-            while (PeekMessageA(&omsg, NULL, 0, 0, PM_REMOVE)) {
-                TranslateMessage(&omsg);
-                DispatchMessageA(&omsg);
-            }
-        }
-    }
-
-    KillTimer(g_OverlayWnd, 1);
-    DestroyWindow(g_OverlayWnd);
-    g_OverlayWnd = NULL;
-
-done:
-    UnregisterClassA("RE1Analog3DOverlay", g_hDllModule);
-    return 0;
-}
-
-static void StartOverlay() {
-    g_OverlayStop = CreateEventA(NULL, TRUE, FALSE, NULL);
-    if (!g_OverlayStop) return;
-    DWORD tid;
-    g_OverlayThreadHnd = CreateThread(NULL, 0, OverlayThreadProc, NULL, 0, &tid);
-}
-
-static void StopOverlay() {
-    if (g_OverlayStop) SetEvent(g_OverlayStop);
-    if (g_OverlayThreadHnd) {
-        WaitForSingleObject(g_OverlayThreadHnd, 3000);
-        CloseHandle(g_OverlayThreadHnd); g_OverlayThreadHnd = NULL;
-    }
-    if (g_OverlayStop) { CloseHandle(g_OverlayStop); g_OverlayStop = NULL; }
 }
 
 /* Read left analog stick with deadzone. Returns true if controller connected. */
@@ -816,50 +487,7 @@ static void ApplyInteractionInputFilter() {
 
 static void ResetAnalogState() {
     g_StickWasActive = false;
-    g_BufferActive   = false;
-    g_BufferedAngle  = 0;
-    g_LastAnalogDir  = 0;
-}
-
-/* ================================================================
-   MODE 3: FREEZE + BLEND
-   ================================================================ */
-
-static void StartFreeze(s16 currentAngle) {
-    g_FreezeUntil  = GetTickCount() + g_FreezeMs;
-    g_FrozenAngle  = currentAngle;
-    g_BlendStart   = 0;
-}
-
-/* Updates g_ActiveCamAngle each frame through the two-phase transition:
-   Phase 1 - hold g_FrozenAngle until the freeze timer expires.
-   Phase 2 - smoothstep blend from g_FrozenAngle toward the live camera angle. */
-static void UpdateFreezeBlend(s16 camAngle) {
-    DWORD now = GetTickCount();
-    if (now < g_FreezeUntil) {
-        g_ActiveCamAngle = g_FrozenAngle;
-        return;
-    }
-    if (g_FreezeUntil) {
-        g_BlendStart     = now;
-        g_FreezeUntil    = 0;
-        g_ActiveCamAngle = g_FrozenAngle;
-        return;
-    }
-    if (g_BlendStart) {
-        float t = (float)(now - g_BlendStart) / (float)g_BlendMs;
-        if (t >= 1.0f) {
-            g_ActiveCamAngle = camAngle;
-            g_BlendStart     = 0;
-        } else {
-            float ss = t * t * (3.0f - 2.0f * t);    /* smoothstep */
-            s16   d  = (s16)((camAngle - g_FrozenAngle) & (BAM_MAX - 1));
-            if (d > BAM_MAX / 2) d -= BAM_MAX;
-            g_ActiveCamAngle = (s16)((g_FrozenAngle + (s16)(d * ss)) & (BAM_MAX - 1));
-        }
-        return;
-    }
-    g_ActiveCamAngle = camAngle;
+    g_LastAnalogDir = 0;
 }
 
 static void ReadCinematicUiState(DEBUG_TILE* outTile, DEBUG_LINE* outLine,
@@ -1144,10 +772,6 @@ static void LogHookStatus();         /* forward declaration ? defined alongside 
 static void ReinstallHookIfNeeded(); /* forward declaration ? defined alongside HookedFn */
 
 static void DoAnalog3D() {
-    /* Mode/disable button polling — must be here, not in HookedFn, because the
-       mid-hook stub (kind=2) and the worker thread both call DoAnalog3D directly. */
-    PollModeButtons();
-
     /* Periodic heartbeat: log full state every 2 seconds regardless of input.
        Captures frozen states where no input is detected. */
     {
@@ -1375,19 +999,6 @@ static void DoAnalog3D() {
        REBirth reinstalls its JMP during room changes; we restore ours once the entity
        is stable to avoid calling the pad function in an unsafe loading state. */
     ReinstallHookIfNeeded();
-
-    /* CTRL+0 kill switch: clear direction keys once on entry, then leave G_KEY
-       untouched so the game's own keyboard handler can drive the character. */
-    {
-        static bool s_wasDisabled = false;
-        if (g_AnalogDisabled) {
-            if (!s_wasDisabled) ApplyAnalogDirectionKey(0); /* clear once */
-            s_wasDisabled = true;
-            ResetAnalogState();
-            return;
-        }
-        s_wasDisabled = false;
-    }
 
     float stickX = 0, stickY = 0, mag = 0;
     bool haveStick = ReadLeftStick(&stickX, &stickY, &mag);
@@ -1627,65 +1238,32 @@ static void DoAnalog3D() {
     s16 currentCam = GetCameraAngleY();
     s16 currentCut = (s16)*G_CUT_NO;
 
-    bool cutChanged = (currentCut != g_LastCutNo);
-    if (cutChanged) g_LastCutNo = currentCut;
-
-    /* Stick released: clear all buffer state and adopt live camera angle. */
-    if (mag < 0.01f) {
+    /* Camera transition buffer: on camera cut, keep old angle while stick
+       is held to prevent the character from flipping direction */
+    if (currentCut != g_LastCutNo) {
+        if (!g_StickWasActive) g_ActiveCamAngle = currentCam;
+        g_LastCutNo = currentCut;
+    }
+    else if (!g_StickWasActive) {
         g_ActiveCamAngle = currentCam;
-        g_StickWasActive = false;
-        g_BufferActive   = false;
-        g_BufferedAngle  = 0;
-        g_LastAnalogDir  = 0;
+    }
+
+    /* Stick released: adopt new camera angle */
+    if (mag < 0.01f) {
+        if (g_StickWasActive) {
+            g_ActiveCamAngle = currentCam;
+            g_StickWasActive = false;
+        }
+        g_LastAnalogDir = 0;
         return;
     }
 
-    /* --- Mode 3: Freeze + smoothstep blend --------------------------------
-       On a cut while the stick is held, snapshot the current angle and hold
-       it for g_FreezeMs ms, then ease into the new angle over g_BlendMs ms.
-       Suppress the cut frame itself to avoid a direction spike. */
-    if (g_CamMode == 3) {
-        if (cutChanged && g_StickWasActive)
-            StartFreeze(g_ActiveCamAngle);
-        UpdateFreezeBlend(currentCam);
-        if (cutChanged) { ApplyAnalogDirectionKey(0); g_StickWasActive = true; return; }
-
-    /* --- Mode 2: Y-dominant buffer, requires running ----------------------
-       Buffer only activates when the stick is Y-dominant (mostly forward/
-       backward) AND the player is currently running at the cut boundary.
-       Walking through cuts always snaps to the new camera immediately.
-       Buffer releases when the player stops running or releases the stick. */
-    } else if (g_CamMode == 2) {
-        if (cutChanged) {
-            bool running = (*PL_MOVE_NO == 4);
-            if (g_StickWasActive && fabsf(stickY) > fabsf(stickX) && running) {
-                g_BufferedAngle = g_ActiveCamAngle;
-                g_BufferActive  = true;
-            } else {
-                g_BufferActive = false;
-            }
-        }
-        if (g_BufferActive && *PL_MOVE_NO != 4)
-            g_BufferActive = false;  /* run button released — snap to live camera */
-        g_ActiveCamAngle = g_BufferActive ? g_BufferedAngle : currentCam;
-
-    /* --- Mode 1: Y-dominant buffer, stick alone (default) -----------------
-       On a cut, snapshot the old angle only when the stick is Y-dominant
-       (mostly forward/backward). Sideways movement uses the new camera
-       immediately. The snapshot is evaluated once at cut time, not every
-       frame, so there are no per-frame snapping artefacts. */
-    } else {
-        if (cutChanged) {
-            if (g_StickWasActive && fabsf(stickY) > fabsf(stickX)) {
-                g_BufferedAngle = g_ActiveCamAngle;
-                g_BufferActive  = true;
-            } else {
-                g_BufferActive = false;
-            }
-        }
-        g_ActiveCamAngle = g_BufferActive ? g_BufferedAngle : currentCam;
-    }
-
+    /* Buffer camera angle for all stick directions while stick is held.
+       The old X-dominant override (sideways always used currentCam) caused
+       1-frame direction snaps: when the stick briefly crossed the X=Y
+       boundary near a camera cut, g_ActiveCamAngle would snap to the new
+       camera for one frame, producing a visible direction lurch.
+       Camera angle update now only happens on stick release (mag < 0.01). */
     g_StickWasActive = true;
 
     /* Convert stick direction to BAM, add camera facing */
@@ -2187,14 +1765,10 @@ static void StopWorker() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
-        g_hDllModule = hModule;
         LogInit();
-        LoadConfig();
         InitXInput();
-        StartOverlay();
     }
     else if (reason == DLL_PROCESS_DETACH) {
-        StopOverlay();
         LogClose();
         StopWorker();
         if (g_Trampoline) { VirtualFree(g_Trampoline, 0, MEM_RELEASE);  g_Trampoline = NULL; }
@@ -2232,22 +1806,8 @@ extern "C" {
     }
 
     __declspec(dllexport) void Modsdk_close() { StopWorker(); }
-    __declspec(dllexport) void Modsdk_load(unsigned char* src, size_t pos, size_t size) {
-        if (src && size >= pos + 1) {
-            u8 m = src[pos];
-            if (m >= CAM_MODE_MIN && m <= CAM_MODE_MAX)
-                g_CamMode = g_SaveBuf = m;
-        }
-        g_FreezeUntil = g_BlendStart = 0;
-        g_BufferActive  = false;
-        g_BufferedAngle = 0;
-    }
-
-    __declspec(dllexport) void Modsdk_save(unsigned char*& dst, size_t& size) {
-        g_SaveBuf = g_CamMode;
-        dst  = &g_SaveBuf;
-        size = 1;
-    }
+    __declspec(dllexport) void Modsdk_load(unsigned char*, size_t, size_t) {}
+    __declspec(dllexport) void Modsdk_save(unsigned char*& dst, size_t& size) { dst = NULL; size = 0; }
 }
 
 

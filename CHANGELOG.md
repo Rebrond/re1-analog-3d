@@ -10,6 +10,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.5] - 2026-03-17
+
+### Added
+- **Three camera-cut handling modes** — ported from x4vv's RE3 mod, switchable in-game with CTRL+1 / CTRL+2 / CTRL+3:
+  - **Mode 1 — Stick Buffer** (default): on a camera cut, the previous camera angle is held while the stick is Y-dominant (forward/backward). Evaluated once at cut boundary, not every frame — no per-frame snap artefacts. Sideways input snaps to new camera immediately.
+  - **Mode 2 — Run Buffer**: same as mode 1 but buffering only activates when the player is running at the cut. Walking through cuts always snaps to the new camera.
+  - **Mode 3 — Smooth Blend**: on a cut the old angle freezes for `freeze_ms` ms, then smoothly blends to the new angle over `blend_ms` ms via smoothstep.
+- **`analog3d.ini`** — persistent config written to the game directory on first launch. Stores active mode and Mode 3 timing values (`freeze_ms`, `blend_ms`). Created with commented defaults if absent.
+- **Mode persistence in save files** — active mode is stored in the mod's save slot via `Modsdk_load` / `Modsdk_save`; survives game restarts.
+- **CTRL+0 kill switch** — toggles analog controls off/on. Useful for bypassing the mod when a scripted sequence conflicts. Direction keys are cleared once on disable, then left untouched so native keyboard control works. CTRL+1/2/3 also re-enables if the mod was disabled.
+- **On-screen mode display** — Win32 layered topmost window (`WS_EX_LAYERED | WS_EX_TOPMOST`) overlaid on the game window. Shows the active mode name (or "Controls Disabled / Enabled") for 5 seconds after any hotkey press. Text scales with window height (~5% of height) for readability at any resolution including ultrawide. Drop shadow uses `RGB(1,1,1)` to remain visible against the transparent colorkey (`RGB(0,0,0)`).
+
+---
+
+## [0.7.4] - 2026-03-17
+
+### Fixed
+- **Door transitions caused ~12 frames of tank controls** — regression introduced during the Codex session. `STATUS` bits `0x40000000` / `0x02000000` (`hardCut`) were used as a latch trigger with a 12-frame release countdown, causing every door transition to block analog for ~0.4 s. Removed `hardCut` from the latch trigger entirely; it now only blocks for its own direct duration. Added `DOOR_RELEASE_FRAMES = 3` (vs `CUTSCENE_RELEASE_FRAMES = 12`) for latches where letterbox was never observed. `s_letterboxSeenDuringLatch` tracks whether letterbox appeared during a latch to distinguish door transitions from real cutscenes.
+
+---
+
+## [0.7.3] - 2026-03-13
+
+### Added
+- `0.7.3/dllmain.cpp` — source snapshot for this version
+
+### Fixed
+- **Room numbers in log matched index, not game debug display** — e.g. `room=6` instead of `106`. Changed formula to `(stage + 1) * 100 + room`; stage is 0-indexed internally but the game debug menu displays it 1-based.
+
+### Changed
+- `README.md` — added RE1-Mod-SDK attribution (created by Gemini-Loboto3, licensed CC BY-NC-ND 4.0)
+
+---
+
 ## [0.7.2] - 2026-03-13
 
 ### Added
