@@ -7,7 +7,21 @@ A DLL mod for **Resident Evil 1 PC (Classic REBirth)** that replaces the origina
 By default, RE1 uses tank controls: forward always means "the direction the playable character is facing". This mod changes that so the **left analog stick moves the playable character relative to the camera** — push up and they walk toward the camera's forward direction, push left and they go left from the camera's perspective, regardless of which way they are facing.
 
 The mod also handles:
-- **Camera cuts** — attempts an angle transition when the camera switches so the character doesn't suddenly reverse direction. **(WIP: depending on camera layout some rooms may cause direction loops — may or may not be fixable)**
+- **Camera cuts** — three switchable modes control how the angle is preserved across camera transitions so the character doesn't suddenly reverse direction:
+  - **Mode 1 — Stick Buffer** *(default)*: on a cut, the previous camera angle is held while the stick is Y-dominant (forward/backward). Sideways input snaps to the new camera immediately.
+  - **Mode 2 — Run Buffer**: same as Mode 1 but buffering only activates when the player is running at the cut. Walking through cuts always uses the new camera.
+  - **Mode 3 — Smooth Blend**: on a cut the old angle freezes briefly, then eases into the new angle over a configurable duration.
+
+## Controls
+
+| Hotkey | Action |
+|--------|--------|
+| CTRL+1 | Mode 1 — Stick Buffer |
+| CTRL+2 | Mode 2 — Run Buffer |
+| CTRL+3 | Mode 3 — Smooth Blend |
+| CTRL+0 | Toggle analog controls off/on |
+
+Active mode is shown on screen for 5 seconds after switching and persists between sessions via `analog3d.ini` in the game directory.
 
 ## Technical overview
 
@@ -33,10 +47,10 @@ The RE1-Mod-SDK submodule is included as a reference — it is **not required to
 Requirements: Visual Studio, Windows SDK
 
 ```
-msbuild analog3d.sln /p:Configuration=Release /p:Platform=Win32
+msbuild analog3d.sln /p:Configuration=Release /p:Platform=x86
 ```
 
-Or open `analog3d.sln` in Visual Studio and build **Release | Win32**.
+Or open `analog3d.sln` in Visual Studio and build **Release | x86**.
 
 Output: `Release/analog3d.dll`
 

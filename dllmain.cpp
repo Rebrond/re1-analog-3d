@@ -144,7 +144,7 @@ static XInputGetStateFn g_XInputGetState = NULL;
 static FILE* g_LogFile = NULL;
 static long  g_LogDataStart = 0;
 static long  g_LogWritePos  = 0;
-enum { LOG_FILE_MAX_BYTES = 1024 * 1024 }; /* 1 MB cap — wraps on overflow */
+enum { LOG_FILE_MAX_BYTES = 256 * 1024 }; /* 256 KB cap — wraps on overflow */
 
 static void LogWriteRaw(const char* text, size_t len) {
     if (!g_LogFile || !text || len == 0) return;
@@ -1350,6 +1350,35 @@ static void DoAnalog3D() {
                 *PL_ROUTINE_0, *PL_ROUTINE_1,
                 (u32)*PL_MOVE_NO, (u32)*PL_MOVE_CNT);
             s_lastFlg5Ctrl = flg5Ctrl;
+        }
+    }
+
+    /* Log PL_FIELD_CA transitions — value 7 = stairs; other values unknown.
+       Needed to identify what chest/ladder animations use. */
+    {
+        static s16 s_lastFieldCA = -999;
+        s16 fca = *PL_FIELD_CA;
+        if (fca != s_lastFieldCA) {
+            Log("FieldCA: %d -> %d | R0=%u R1=%u move=%u/%u st=0x%02X STATUS=0x%X SYS=0x%X",
+                (int)s_lastFieldCA, (int)fca,
+                *PL_ROUTINE_0, *PL_ROUTINE_1,
+                (u32)*PL_MOVE_NO, (u32)*PL_MOVE_CNT,
+                *PL_ST_FLG, *G_STATUS_FLG, *G_SYSTEM_FLG);
+            s_lastFieldCA = fca;
+        }
+    }
+
+    /* Log PL_ST_FLG transitions (separate from State lines for easy search). */
+    {
+        static u8 s_lastStFlg = 0xFF;
+        u8 stf = *PL_ST_FLG;
+        if (stf != s_lastStFlg) {
+            Log("StFlg: 0x%02X -> 0x%02X | R0=%u R1=%u move=%u/%u STATUS=0x%X",
+                s_lastStFlg, stf,
+                *PL_ROUTINE_0, *PL_ROUTINE_1,
+                (u32)*PL_MOVE_NO, (u32)*PL_MOVE_CNT,
+                *G_STATUS_FLG);
+            s_lastStFlg = stf;
         }
     }
 
