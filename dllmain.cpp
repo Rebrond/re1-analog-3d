@@ -59,6 +59,8 @@ struct DEBUG_LINE {
 
 #define XINPUT_DEADZONE 7849
 #define WALK_THRESHOLD  0.35f
+#define AIM_Y_THRESHOLD 0.90f  /* min |stickY| to trigger aim up/down (stick nearly at max) */
+#define AIM_X_MAX       0.20f  /* max |stickX| allowed while aiming up/down (nearly centred) */
 
    /* RE1 directional key bits (from re1.h) */
 #define KEY_FORWARD  0x0001
@@ -250,16 +252,18 @@ static u16  g_TrackedStickDir = 0;
 static u16  g_InteractPassDir = 0;
 static u16  g_InteractPassKey = 0;
 static u8   g_TrackedStickFrames = 0;
+static s16  g_PreCallCdirY = 0;     /* PL_CDIR_Y captured before g_OriginalFn() runs — used to cancel aiming delta */
 
 /* ================================================================
    MOVEMENT MODE STATE
-   Three camera-cut handling modes, switchable with CTRL+1/2/3:
+   Four camera-cut handling modes, switchable with CTRL+1/2/3/4:
      1 = Y-dominant stick buffer  (default)
      2 = Y-dominant buffer + run button required
      3 = Freeze + smoothstep blend
+     4 = Sector-based Remake Controls
    ================================================================ */
 #define CAM_MODE_MIN      1
-#define CAM_MODE_MAX      3
+#define CAM_MODE_MAX      4
 #define CAM_MODE_DEFAULT  1
 #define FREEZE_MS_DEFAULT 250   /* mode 3: ms to hold old angle after cut  */
 #define BLEND_MS_DEFAULT  100   /* mode 3: ms to blend into new angle      */
@@ -278,12 +282,21 @@ static s16   g_FrozenAngle   = 0;
 static bool  g_BufferActive  = false;
 static s16   g_BufferedAngle = 0;
 
+/* Mode 4: Sector-based Remake Controls */
+static int   g_Sectors             = 16;    /* stick sectors: 8=45 deg, 16=22.5 deg */
+static float g_RotationSpeedDeg    = 50.0f; /* char rotation speed deg/frame; 0=instant */
+static DWORD g_CameraUpdateDelayMs = 40;    /* ms delay before adopting new cam on sector change */
+static int   g_RemakeSector        = -1;    /* locked sector; -1=none */
+static bool  g_PendingCameraUpdate = false;
+static int   g_PendingSector       = -1;
+static DWORD g_PendingCameraUpdateAt = 0;
+
 /* CTRL+0 disable toggle */
 static bool  g_AnalogDisabled  = false;
 static bool  g_Ctrl0WasDown    = false;
 
-/* CTRL+1/2/3 edge detection (indices 1-3 used) */
-static bool  g_KeyWasDown[4] = {};
+/* CTRL+1/2/3/4 edge detection (indices 1-4 used) */
+static bool  g_KeyWasDown[5] = {};
 
 /* INI config path */
 static char  g_IniPath[MAX_PATH] = {};
@@ -359,7 +372,7 @@ static void CreateDefaultIni() {
     if (h == INVALID_HANDLE_VALUE) return;
     const char* content =
         "[analog3d]\r\n"
-        "; Camera-cut handling mode. Switch in-game with CTRL+1 / CTRL+2 / CTRL+3.\r\n"
+        "; Camera-cut handling mode. Switch in-game with CTRL+1 / CTRL+2 / CTRL+3 / CTRL+4.\r\n"
         ";\r\n"
         ";   1 = Stick buffer (default)\r\n"
         ";       On a camera cut, the previous camera angle is held while you keep\r\n"
@@ -373,11 +386,24 @@ static void CreateDefaultIni() {
         ";   3 = Freeze and blend\r\n"
         ";       On a cut the old angle freezes for freeze_ms milliseconds, then\r\n"
         ";       smoothly blends to the new angle over blend_ms milliseconds.\r\n"
+        ";\r\n"
+        ";   4 = Sector Remake Controls (ported from RE2 mod)\r\n"
+        ";       Stick is divided into N sectors. The camera angle is buffered when\r\n"
+        ";       the stick first engages and updated only when you cross a sector\r\n"
+        ";       boundary. On a camera cut, the update is delayed by camera_update_delay ms.\r\n"
+        ";       Character rotation is smoothed at rotation_speed_deg deg/frame.\r\n"
         "mode=1\r\n"
         "\r\n"
         "; Mode 3 timing (milliseconds)\r\n"
         "freeze_ms=250\r\n"
-        "blend_ms=100\r\n";
+        "blend_ms=100\r\n"
+        "\r\n"
+        "; Mode 4: directional sectors (8=45 deg, 16=22.5 deg)\r\n"
+        "sectors=16\r\n"
+        "; Mode 4: character rotation speed in degrees/frame (0=instant)\r\n"
+        "rotation_speed_deg=50.0\r\n"
+        "; Mode 4: delay (ms) before adopting new camera angle on sector change after a cut\r\n"
+        "camera_update_delay=40\r\n";
     DWORD written;
     WriteFile(h, content, lstrlenA(content), &written, NULL);
     CloseHandle(h);
@@ -399,14 +425,25 @@ static void LoadConfig() {
     int mode = (int)GetPrivateProfileIntA("analog3d", "mode",      CAM_MODE_DEFAULT,  g_IniPath);
     int frz  = (int)GetPrivateProfileIntA("analog3d", "freeze_ms", FREEZE_MS_DEFAULT, g_IniPath);
     int bld  = (int)GetPrivateProfileIntA("analog3d", "blend_ms",  BLEND_MS_DEFAULT,  g_IniPath);
+    int sec  = (int)GetPrivateProfileIntA("analog3d", "sectors",   16,                g_IniPath);
+    int cam_delay = (int)GetPrivateProfileIntA("analog3d", "camera_update_delay", 40, g_IniPath);
+    char rotStr[64] = {};
+    GetPrivateProfileStringA("analog3d", "rotation_speed_deg", "50.0", rotStr, sizeof(rotStr), g_IniPath);
 
     if (mode < CAM_MODE_MIN || mode > CAM_MODE_MAX) mode = CAM_MODE_DEFAULT;
     if (frz < 0) frz = 0;
     if (bld < 1) bld = 1;
+    if (sec < 4) sec = 4; if (sec > 32) sec = 32;
+    if (cam_delay < 0) cam_delay = 0; if (cam_delay > 1000) cam_delay = 1000;
+    float rotSpeed = (float)atof(rotStr);
+    if (rotSpeed < 0.0f) rotSpeed = 0.0f; if (rotSpeed > 180.0f) rotSpeed = 180.0f;
 
     g_CamMode = g_SaveBuf = (u8)mode;
     g_FreezeMs = (DWORD)frz;
     g_BlendMs  = (DWORD)bld;
+    g_Sectors             = sec;
+    g_CameraUpdateDelayMs = (DWORD)cam_delay;
+    g_RotationSpeedDeg    = rotSpeed;
 }
 
 static void SaveConfig() {
@@ -449,8 +486,8 @@ static void PollModeButtons() {
     }
     g_Ctrl0WasDown = ctrl0;
 
-    /* CTRL+1/2/3: switch camera mode */
-    for (int i = 1; i <= 3; i++) {
+    /* CTRL+1/2/3/4: switch camera mode */
+    for (int i = 1; i <= CAM_MODE_MAX; i++) {
         bool down = ctrl && (GetAsyncKeyState(0x30 + i) & 0x8000) != 0;
         if (down && !g_KeyWasDown[i]) SetMode((u8)i);
         g_KeyWasDown[i] = down;
@@ -484,9 +521,10 @@ static void ShowOverlayText(const char* text) {
 
 static void SetModeText(u8 mode) {
     static const char* const kNames[] = {
-        "", "Mode 1 - Stick Buffer", "Mode 2 - Run Buffer", "Mode 3 - Smooth Blend"
+        "", "Mode 1 - Stick Buffer", "Mode 2 - Run Buffer", "Mode 3 - Smooth Blend",
+        "Mode 4 - Sector Remake"
     };
-    if (mode < 1 || mode > 3) return;
+    if (mode < 1 || mode > 4) return;
     ShowOverlayText(kNames[mode]);
 }
 
@@ -697,6 +735,23 @@ static u16 SnapBamToNearestAxis(u16 dir) {
     return best;
 }
 
+/* Mode 4: BAM conversion helpers */
+static int DegToBam(float deg) {
+    int bam = (int)(deg * (float)BAM_MAX / 360.0f + 0.5f);
+    return (bam < 0) ? 0 : (bam > BAM_MAX / 2) ? BAM_MAX / 2 : bam;
+}
+
+static s16 RotateTowardBam(s16 current, s16 target, int maxStepBam) {
+    int cur = (int)((unsigned short)current) & (BAM_MAX - 1);
+    int tgt = (int)((unsigned short)target)  & (BAM_MAX - 1);
+    int delta = tgt - cur;
+    if (delta >  BAM_MAX / 2) delta -= BAM_MAX;
+    if (delta < -(BAM_MAX / 2)) delta += BAM_MAX;
+    if (maxStepBam <= 0 || (delta >= -maxStepBam && delta <= maxStepBam)) return (s16)tgt;
+    if (delta > 0) cur += maxStepBam; else cur -= maxStepBam;
+    return (s16)(cur & (BAM_MAX - 1));
+}
+
 /* ================================================================
    GAME STATE CHECKS
    ================================================================ */
@@ -819,6 +874,11 @@ static void ResetAnalogState() {
     g_BufferActive   = false;
     g_BufferedAngle  = 0;
     g_LastAnalogDir  = 0;
+    /* Mode 4 sector state */
+    g_RemakeSector        = -1;
+    g_PendingCameraUpdate = false;
+    g_PendingSector       = -1;
+    g_PendingCameraUpdateAt = 0;
 }
 
 /* ================================================================
@@ -1624,6 +1684,11 @@ static void DoAnalog3D() {
     ResetStairsAlignment();
 
 
+    /* Aiming: let the game handle everything via its own pad function.
+       PL_CDIR_Y = horizontal rotation (driven by LEFT/RIGHT keys that the original function sets).
+       Vertical aim sensitivity uses a separate address — TODO: find it with CE scan:
+         while holding aim, scan for s16 that changes ONLY when pushing stick straight up/down,
+         stays 0 at neutral, goes +/- with vertical input, ignores left/right. */
     if (aiming) return;
 
     /* When not in a normal movement state (R0=8 during interactions, R0=2 during damage, etc.),
@@ -1666,6 +1731,10 @@ static void DoAnalog3D() {
         g_BufferActive   = false;
         g_BufferedAngle  = 0;
         g_LastAnalogDir  = 0;
+        /* Mode 4: reset sector latch so re-engagement re-latches to current camera */
+        g_RemakeSector        = -1;
+        g_PendingCameraUpdate = false;
+        g_PendingSector       = -1;
         return;
     }
 
@@ -1703,7 +1772,7 @@ static void DoAnalog3D() {
        (mostly forward/backward). Sideways movement uses the new camera
        immediately. The snapshot is evaluated once at cut time, not every
        frame, so there are no per-frame snapping artefacts. */
-    } else {
+    } else if (g_CamMode != 4) {
         if (cutChanged) {
             if (g_StickWasActive && fabsf(stickY) > fabsf(stickX)) {
                 g_BufferedAngle = g_ActiveCamAngle;
@@ -1715,6 +1784,44 @@ static void DoAnalog3D() {
         g_ActiveCamAngle = g_BufferActive ? g_BufferedAngle : currentCam;
     }
 
+    /* --- Mode 4: Sector-based Remake Controls (ported from RE2 mod) --------
+       Divide stick angle into g_Sectors sectors. Buffer the camera angle when
+       the stick first engages; update only when the sector changes. On a cut
+       + sector change, delay the update by g_CameraUpdateDelayMs ms to avoid
+       direction spikes on fast camera cuts. */
+    if (g_CamMode == 4) {
+        float rad4    = atan2f(stickX, stickY);
+        s16 stickBAM4 = (s16)(rad4 / PI_F * (BAM_MAX / 2));
+        int angU   = (int)((unsigned short)((stickBAM4 + (s16)BAM_MAX) & (BAM_MAX - 1)));
+        int sector = angU / (BAM_MAX / g_Sectors);
+
+        if (g_PendingCameraUpdate && GetTickCount() >= g_PendingCameraUpdateAt) {
+            g_BufferedAngle = GetCameraAngleY();
+            if (g_PendingSector >= 0) g_RemakeSector = g_PendingSector;
+            g_PendingCameraUpdate = false;
+            g_PendingSector = -1;
+        }
+        if (g_RemakeSector < 0) {
+            /* First engagement: latch camera angle and current sector */
+            g_BufferedAngle = currentCam;
+            g_RemakeSector  = sector;
+            g_BufferActive  = true;
+        } else if (sector != g_RemakeSector) {
+            /* Sector crossed: update immediately, or schedule delayed update on cut */
+            if (cutChanged && g_CameraUpdateDelayMs > 0) {
+                g_PendingCameraUpdate   = true;
+                g_PendingSector         = sector;
+                g_PendingCameraUpdateAt = GetTickCount() + g_CameraUpdateDelayMs;
+            } else {
+                g_BufferedAngle       = currentCam;
+                g_RemakeSector        = sector;
+                g_PendingCameraUpdate = false;
+                g_PendingSector       = -1;
+            }
+        }
+        g_ActiveCamAngle = g_BufferedAngle;
+    }
+
     g_StickWasActive = true;
 
     /* Convert stick direction to BAM, add camera facing */
@@ -1723,10 +1830,13 @@ static void DoAnalog3D() {
     u16 targetDir = (u16)((stickBAM + g_ActiveCamAngle) & (BAM_MAX - 1));
 
     /* If target is >90? behind current facing, walk backward instead of forward.
-       This prevents the movement state machine from stalling on 180? turns. */
+       This prevents the movement state machine from stalling on 180? turns.
+       Mode 4: skip backward detection — rotation smoothing already handles large turns
+       gradually (matching RE2 behaviour), so KEY_BACKWARD is never needed and would
+       cause the run animation to restart from frame 0 mid-turn. */
     u16 currentDir = ((u16)*PL_CDIR_Y) & (BAM_MAX - 1);
     s16 turnDelta = WrapBamDelta((s32)targetDir - (s32)currentDir);
-    u16 moveKey = (turnDelta > BAM_MAX / 4 || turnDelta < -BAM_MAX / 4)
+    u16 moveKey = (g_CamMode != 4 && (turnDelta > BAM_MAX / 4 || turnDelta < -BAM_MAX / 4))
         ? KEY_BACKWARD : KEY_FORWARD;
 
     /* Streak guard: require 3 consecutive normalMove frames before writing PL_CDIR_Y.
@@ -1737,9 +1847,17 @@ static void DoAnalog3D() {
         return;
     }
 
-    /* Write player facing (both live entity and save-area copy) */
-    *PL_CDIR_Y = (s16)targetDir;
-    *G_PL_CDIR_Y = (s16)targetDir;
+    /* Write player facing (both live entity and save-area copy).
+       Mode 4: use rotation smoothing when rotation_speed_deg > 0. */
+    if (g_CamMode == 4 && g_RotationSpeedDeg > 0.0f) {
+        int maxStep = DegToBam(g_RotationSpeedDeg);
+        s16 smoothed = RotateTowardBam(*PL_CDIR_Y, (s16)targetDir, maxStep);
+        *PL_CDIR_Y    = smoothed;
+        *G_PL_CDIR_Y  = smoothed;
+    } else {
+        *PL_CDIR_Y    = (s16)targetDir;
+        *G_PL_CDIR_Y  = (s16)targetDir;
+    }
 
     /* Apply movement key or clear if below walk threshold */
     ApplyAnalogDirectionKey(mag >= WALK_THRESHOLD ? moveKey : 0);
@@ -1845,6 +1963,7 @@ static void __cdecl HookedFn() {
             g_PostReinstallFrames, (u32)g_OriginalFn, ((u8*)0x483527)[0]);
     }
 
+    g_PreCallCdirY = *PL_CDIR_Y;
     __try {
         if (g_OriginalFn) g_OriginalFn();
     }
