@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## [0.7.6] - 2026-03-28
+## [0.9.0] - 2026-03-28
 
 ### Added
 - **Mode 4 — Sector Remake** (`CTRL+4`) — new camera-cut handling mode inspired by X4vv's upgrade of this mod for RE2/RE3:
@@ -142,8 +142,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-[Unreleased]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.6...HEAD
-[0.7.6]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.5...v0.7.6
+[Unreleased]: https://github.com/Rebrond/re1-analog-3d/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.5...v0.9.0
 [0.7.5]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.2...v0.7.5
 [0.7.2]: https://github.com/Rebrond/re1-analog-3d/compare/v0.5.0...v0.7.2
 [0.5.0]: https://github.com/Rebrond/re1-analog-3d/compare/v0.4.0...v0.5.0
