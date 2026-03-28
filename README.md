@@ -7,10 +7,11 @@ A DLL mod for **Resident Evil 1 PC (Classic REBirth)** that replaces the origina
 By default, RE1 uses tank controls: forward always means "the direction the playable character is facing". This mod changes that so the **left analog stick moves the playable character relative to the camera** — push up and they walk toward the camera's forward direction, push left and they go left from the camera's perspective, regardless of which way they are facing.
 
 The mod also handles:
-- **Camera cuts** — three switchable modes control how the angle is preserved across camera transitions so the character doesn't suddenly reverse direction:
+- **Camera cuts** — four switchable modes control how the angle is preserved across camera transitions so the character doesn't suddenly reverse direction:
   - **Mode 1 — Stick Buffer** *(default)*: on a cut, the previous camera angle is held while the stick is Y-dominant (forward/backward). Sideways input snaps to the new camera immediately.
   - **Mode 2 — Run Buffer**: same as Mode 1 but buffering only activates when the player is running at the cut. Walking through cuts always uses the new camera.
   - **Mode 3 — Smooth Blend**: on a cut the old angle freezes briefly, then eases into the new angle over a configurable duration.
+  - **Mode 4 — Sector Remake**: the stick angle is divided into configurable sectors (default 16 = 22.5° each). The camera angle is latched when the stick first engages and only updates when the stick crosses a sector boundary. On a camera cut the angle update is briefly delayed to avoid direction spikes. Character rotation is smoothed for a fluid, modern feel. Inspired by X4vv's RE2/RE3 upgrade.
 
 ## Controls
 
@@ -19,6 +20,7 @@ The mod also handles:
 | CTRL+1 | Mode 1 — Stick Buffer |
 | CTRL+2 | Mode 2 — Run Buffer |
 | CTRL+3 | Mode 3 — Smooth Blend |
+| CTRL+4 | Mode 4 — Sector Remake |
 | CTRL+0 | Toggle analog controls off/on |
 
 Active mode is shown on screen for 5 seconds after switching and persists between sessions via `analog3d.ini` in the game directory.

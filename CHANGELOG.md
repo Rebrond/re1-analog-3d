@@ -10,6 +10,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [0.7.6] - 2026-03-28
+
+### Added
+- **Mode 4 — Sector Remake** (`CTRL+4`) — new camera-cut handling mode inspired by X4vv's upgrade of this mod for RE2/RE3:
+  - Stick angle is divided into configurable sectors (default 16 = 22.5° each, set via `sectors` in `analog3d.ini`)
+  - Camera angle is latched when the stick first engages from the deadzone; only updates when the stick crosses a sector boundary
+  - On a camera cut coinciding with a sector boundary crossing, the angle update is delayed by `camera_update_delay` ms (default 40 ms) to avoid direction spikes
+  - Character rotation is smoothed at `rotation_speed_deg` degrees per second (default 50°/s) for a fluid, modern feel
+  - Backward key detection disabled in this mode — always uses `KEY_FORWARD` (like RE2/RE3) since rotation smoothing handles large turns gradually
+- Three new `analog3d.ini` entries: `sectors`, `rotation_speed_deg`, `camera_update_delay`
+
+### Fixed
+- **Mode 4: rotation inconsistency after stick release/re-engage** — `g_RemakeSector` was not reset when the stick entered the deadzone. On re-engagement in the same stick sector, neither sector branch fired and `g_ActiveCamAngle` fell back to BAM zero (north), causing the character to always snap toward north. Fix: reset `g_RemakeSector = -1` on deadzone entry so re-engagement re-latches to the current live camera angle.
+- **Mode 4: run animation restarted on camera cuts** — the backward key detection caused `KEY_BACKWARD` during the frames while rotation smoothing was catching up after a pending camera update. The `BACKWARD → FORWARD` transition wrote `KEY_FORWARD` as a new press to `G_KEY_TRG`, restarting the run animation from frame 0 on every cut. Fix: disabled backward detection in Mode 4 entirely.
+
+### Credits
+- Mode 4 concept and sector-based logic inspired by **X4vv**'s RE2/RE3 upgrade of this mod
+
+---
+
 ## [0.7.5] - 2026-03-17
 
 ### Added
@@ -122,7 +142,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-[Unreleased]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.5...v0.7.6
+[0.7.5]: https://github.com/Rebrond/re1-analog-3d/compare/v0.7.2...v0.7.5
 [0.7.2]: https://github.com/Rebrond/re1-analog-3d/compare/v0.5.0...v0.7.2
 [0.5.0]: https://github.com/Rebrond/re1-analog-3d/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Rebrond/re1-analog-3d/compare/v0.3.0...v0.4.0
